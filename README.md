@@ -13,6 +13,14 @@ The new and improved codebase for the (M5Stack Core2) temperature display.
   - [CH9102_VCP_SER_Windows](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CH9102_VCP_SER_Windows.exe)
   - Will probably require a reboot of you computer.
 - Create a `src/credentials.h` which you fill with the `#define`'s from [src/main.h](./src/main.h)
+  - Important to make sure the `CA_CERT` has the correct formatting (`\n` in the string and trailing `\` on each line)
+    ```cpp
+    #define CA_CERT "-----BEGIN CERTIFICATE-----\n"                                 \
+               "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n" \
+               ...
+               "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n" \
+               "-----END CERTIFICATE-----";
+    ```
 - (Optional) Create a `src/overrides.h` which you fill with the `#defines`'s from [src/State.h](./src/State.h), if you need to use custom MQTT topics etc.
 
 ## MQTT

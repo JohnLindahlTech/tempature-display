@@ -1,85 +1,84 @@
 #include <M5Unified.h>
-#include <WiFi.h>
 #include <SSLClient.h>
-#include "Printer.h"
-#include "StickyWiFi.h"
-#include "State.h"
+#include <WiFi.h>
+#include "Config.h"
+#include "Log.h"
 #include "MQTT.h"
+#include "Printer.h"
+#include "State.h"
+#include "StickyWiFi.h"
 
-#if defined __has_include
-#if __has_include("credentials.h")
-// If using the credentials.h file, all the #defines from below needs to be available.
-#include "credentials.h"
-
-#else
-
-#define MQTT_SERVER "mqtt.home.arpa"
-#define MQTT_PORT 8883
-#define MQTT_USER "user"
-#define MQTT_PASSWORD "password"
-#define MQTT_CLIENT_IT "myMqttClient"
-#define SSID "Wifi-SSID"
-#define PASSPHRASE "Wifi-passphrase"
-
-// Notice the format for each row: Inside the string use \n and end of line needs a \ (backslash)
-#define CA_CERT "-----BEGIN CERTIFICATE-----\n" \
-                "asfefgwgegwegeg\n"             \
-                "-----END CERTIFICATE-----"
-
-#endif
-#endif
-
-const char *mqttServer = MQTT_SERVER;
-const int mqttPort = MQTT_PORT;
-const char *mqttUser = MQTT_USER;
-const char *mqttPassword = MQTT_PASSWORD;
-const char *mqttClientId = MQTT_CLIENT_IT;
-const char *ca_cert = CA_CERT;
-const char *ssid = SSID;
-const char *password = PASSPHRASE;
-
-Printer printer = Printer();
-State state = State(&printer);
-StickyWiFi swifi = StickyWiFi();
+Printer printer;
+State state(&printer);
+StickyWiFi swifi;
 
 WiFiClient wifi_transport_layer;
 SSLClient secure_presentation_layer(&wifi_transport_layer);
 MQTT mqtt(secure_presentation_layer);
 
-boolean requestedUpdate = false;
+// Centre dot: a traffic light for faults, a blip for activity.
+//
+// While connected and idle it is painted in the base colour, i.e. invisible.
+// Every inbound message flashes it green for ACTIVITY_BLIP_MS. Anything wrong
+// with WiFi or the broker shows as a persistent fault colour instead.
+static uint32_t activityAt = 0;
+static bool activityPending = false;
 
 void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 {
+  activityAt = millis();
+  activityPending = true;
   state.update(topic, payload, length);
+}
+
+static void paintDot(bool wifiConnected, bool mqttConnected)
+{
+  if (!wifiConnected)
+  {
+    printer.dot(swifi.statusColor());
+    return;
+  }
+  if (!mqttConnected)
+  {
+    printer.dot(mqtt.statusColor());
+    return;
+  }
+
+  // Unsigned subtraction, so this survives the millis() rollover.
+  if (activityPending && (millis() - activityAt) < ACTIVITY_BLIP_MS)
+  {
+    printer.dot(TFT_GREEN);
+    return;
+  }
+
+  activityPending = false;
+  printer.dot(M5.Display.getBaseColor());
 }
 
 void setup()
 {
-  // Serial.begin(9600);
-  // Serial.println("Hello Moto?");
+  LOG_BEGIN();
+
   auto cfg = M5.config();
   cfg.led_brightness = 0;
   M5.begin(cfg);
 
-  printer.base(TFT_GOLD);
+  printer.begin();
+  printer.clear(TFT_GOLD);
   printer.dot(TFT_WHITE);
 
-  secure_presentation_layer.setCACert(ca_cert);
-  mqtt.init((char *)mqttServer, mqttPort, (char *)mqttClientId, (char *)mqttUser, (char *)mqttPassword);
+  secure_presentation_layer.setCACert(CA_CERT);
 
-  mqtt.subscribe((char *)TEMPERATURE_0);
-  mqtt.subscribe((char *)TEMPERATURE_1);
-  mqtt.subscribe((char *)TEMPERATURE_2);
-  mqtt.subscribe((char *)TEMPERATURE_3);
-  mqtt.subscribe((char *)WAKE);
-  mqtt.subscribe((char *)SLEEP);
+  mqtt.init(MQTT_SERVER, MQTT_PORT, MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD);
   mqtt.setCallback(mqttCallback);
-
-  wl_status_t status = swifi.init((char *)ssid, (char *)password);
-  if (status == WL_CONNECTED)
+  for (uint8_t i = 0; i < SLOT_COUNT; i += 1)
   {
-    printer.dot(swifi.statusColor());
+    mqtt.subscribe(TEMPERATURE_TOPICS[i]);
   }
+  mqtt.subscribe(WAKE);
+  mqtt.subscribe(SLEEP);
+
+  swifi.init(SSID, PASSPHRASE);
 }
 
 void loop()
@@ -87,52 +86,40 @@ void loop()
   delay(1);
   M5.update();
 
-  /**
-   *
-   * MQTT Ctrl
-   *
-   */
+  // --- Connectivity --------------------------------------------------------
   wl_status_t status = swifi.loop();
-  if (status == WL_CONNECTED)
+  bool wifiConnected = (status == WL_CONNECTED);
+  bool mqttConnected = false;
+  if (wifiConnected)
   {
-    boolean mqttConnect = mqtt.loop();
-    if (mqttConnect && !requestedUpdate)
-    {
-      printer.dot(TFT_GREEN);
-      mqtt.publish(REQUEST_UPDATE, "true");
-      requestedUpdate = true;
-    }
-    else if (!mqttConnect)
-    {
-      requestedUpdate = false;
-      printer.dot(mqtt.statusColor());
-    }
-    // else, connected but nothing needs to be done
+    // The broker replays every retained topic when we resubscribe, so a fresh
+    // connection repopulates the screen on its own. No update request needed.
+    mqttConnected = mqtt.loop();
   }
-  else
-  {
-    // Not connected
-    printer.dot(swifi.statusColor());
-  }
-  /**
-   *
-   * Button Ctrl
-   *
-   */
+  paintDot(wifiConnected, mqttConnected);
+
+  // Grey out quadrants whose sensor has gone quiet.
+  state.tick();
+
+  // --- Buttons -------------------------------------------------------------
   if (M5.BtnA.wasClicked())
   {
+    LOG("btn A: wake");
     M5.Display.wakeup();
+    state.redraw();
   }
+
   if (M5.BtnB.wasClicked())
   {
-    if (status == WL_CONNECTED && mqtt.status() == MQTT_CONNECTED)
-    {
-      printer.dot(TFT_GREEN);
-      mqtt.publish(REQUEST_UPDATE, "true");
-    }
+    // Manual refresh: reconnecting resubscribes, and the broker replays the
+    // retained values.
+    LOG("btn B: refresh");
+    mqtt.forceReconnect();
   }
+
   if (M5.BtnC.wasClicked())
   {
+    LOG("btn C: sleep");
     M5.Display.sleep();
   }
 }

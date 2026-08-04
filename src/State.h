@@ -1,62 +1,46 @@
-#include "Arduino.h"
+#pragma once
+
+#include <Arduino.h>
+#include "Config.h"
 #include "Printer.h"
-#ifndef state_h
-#define state_h
 
-#if defined __has_include
-#if __has_include("overrides.h")
-// If using the overrides.h file, all the #defines from below needs to be available.
-#include "overrides.h"
+// Slot index -> temperature topic, in Printer's reading-order layout.
+extern const char *const TEMPERATURE_TOPICS[SLOT_COUNT];
 
-#else
-
-// Upper Left
-#define TEMPERATURE_0 "m5/temperature/0"
-
-// Upper Right
-#define TEMPERATURE_1 "m5/temperature/1"
-
-// Lower Left
-#define TEMPERATURE_2 "m5/temperature/2"
-
-// Lower Right
-#define TEMPERATURE_3 "m5/temperature/3"
-
-#define REQUEST_UPDATE "m5/request/update"
-#define SLEEP "m5/status/sleep"
-#define WAKE "m5/status/wake"
-
-#define BUFFER_SIZE 50
-#define PAYLOAD_DELIMITER '|'
-
-#endif
-#endif
-
+// Holds the last value for each of the four quadrants and decides when the
+// screen actually needs repainting.
 class State
 {
 public:
   State(Printer *printer);
-  void update(char *topic, uint8_t *payload, unsigned int length);
+
+  // Feeds one MQTT message in. Returns true if the topic was recognised.
+  bool update(const char *topic, const uint8_t *payload, unsigned int length);
+
+  // Call from loop(): greys out slots that have gone quiet.
+  void tick();
+
+  // Repaints every slot, e.g. after the display wakes up.
+  void redraw();
 
 private:
+  struct Slot
+  {
+    char name[BUFFER_SIZE];
+    char temperature[BUFFER_SIZE];
+    uint32_t lastUpdate; // millis() when the last message arrived
+    bool received;       // has this slot ever had a message?
+    bool stale;          // currently drawn greyed out
+  };
+
+  void apply(uint8_t index, const uint8_t *payload, unsigned int length);
+  void render(uint8_t index);
+  int32_t colorFor(const Slot &slot) const;
+
+  // Splits "<temperature>|<name>" into two null-terminated buffers of
+  // BUFFER_SIZE bytes each.
+  static void split(const uint8_t *source, unsigned int length, char *first, char *second);
+
   Printer *_printer;
-
-  char _nameBuffer[BUFFER_SIZE];
-  char _tempBuffer[BUFFER_SIZE];
-
-  char _upperLeftName[BUFFER_SIZE];
-  char _upperLeftTemp[BUFFER_SIZE];
-
-  char _upperRightName[BUFFER_SIZE];
-  char _upperRightTemp[BUFFER_SIZE];
-
-  char _lowerLeftName[BUFFER_SIZE];
-  char _lowerLeftTemp[BUFFER_SIZE];
-
-  char _lowerRightName[BUFFER_SIZE];
-  char _lowerRightTemp[BUFFER_SIZE];
-
-  void split(char source[], unsigned int length, char t1[], char t2[]);
+  Slot _slots[SLOT_COUNT];
 };
-
-#endif

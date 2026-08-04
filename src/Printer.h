@@ -1,26 +1,41 @@
-#include "Arduino.h"
+#pragma once
 
-#ifndef printer_h
-#define printer_h
+#include <Arduino.h>
+#include "Config.h"
+
+// The display is a 2x2 grid. Slots are numbered in reading order:
+//
+//   0 | 1
+//   --+--
+//   2 | 3
+//
+// which matches TEMPERATURE_0..TEMPERATURE_3.
+#define SLOT_COUNT 4
 
 class Printer
 {
 public:
   Printer();
-  void init(char *ul, char *ur, char *ll, char *lr, char *val, int32_t color);
-  void base(int32_t color);
 
-  void upperLeft(char *txt, char *temperature, int32_t color);
-  void upperRight(char *txt, char *temperature, int32_t color);
-  void lowerLeft(char *txt, char *temperature, int32_t color);
-  void lowerRight(char *txt, char *temperature, int32_t color);
+  // Must be called after M5.begin(), it reads the panel dimensions.
+  void begin();
+
+  // Paints the grid background: four empty boxes in `color`.
+  void clear(int32_t color);
+
+  // Repaints one slot. Caller decides when something actually changed;
+  // repainting is a visible flash, so don't call this on every message.
+  void slot(uint8_t index, const char *name, const char *temperature, int32_t color);
+
+  // Connection indicator in the middle of the grid. Redraws only on change.
   void dot(int32_t color);
-  void box(int32_t x, int32_t y, int32_t color);
-  void text(char *txt, char *temperature, int32_t x, int32_t y, int32_t color);
 
 private:
-  int _height;
-  int _width;
-};
+  void origin(uint8_t index, int32_t &x, int32_t &y) const;
+  void box(int32_t x, int32_t y, int32_t color);
+  void text(const char *name, const char *temperature, int32_t x, int32_t y, int32_t color);
 
-#endif
+  int32_t _width;
+  int32_t _height;
+  int32_t _dotColor;
+};

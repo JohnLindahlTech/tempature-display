@@ -12,7 +12,7 @@ The new and improved codebase for the (M5Stack Core2) temperature display.
   - [CP210x_VCP_Windows](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Windows.zip) - This is probably the one you want.
   - [CH9102_VCP_SER_Windows](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CH9102_VCP_SER_Windows.exe)
   - Will probably require a reboot of you computer.
-- Create a `src/credentials.h` which you fill with the `#define`'s from [src/main.h](./src/main.h)
+- Create a `src/credentials.h` which you fill with the `#define`'s from [src/Config.h](./src/Config.h)
   - Important to make sure the `CA_CERT` has the correct formatting (`\n` in the string and trailing `\` on each line)
     ```cpp
     #define CA_CERT "-----BEGIN CERTIFICATE-----\n"                                 \
@@ -21,19 +21,27 @@ The new and improved codebase for the (M5Stack Core2) temperature display.
                "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n" \
                "-----END CERTIFICATE-----";
     ```
-- (Optional) Create a `src/overrides.h` which you fill with the `#defines`'s from [src/State.h](./src/State.h), if you need to use custom MQTT topics etc.
+- (Optional) Create a `src/overrides.h` if you need custom MQTT topics, timings or layout.
+
+Both files are **partial**: define only the macros you want to change, everything else falls back to the default in [src/Config.h](./src/Config.h). That file is the single place where every compile-time setting is declared and documented.
+
+Serial logging is on by default at 115200 baud (`pio device monitor`). Build with `-D DEBUG=0` to compile it out.
 
 ## MQTT
 
 ### m5/temperature/[0-3]
 
-Subscription: The payload of the temperature supports 2 modes of operation.
+Subscription, one topic per screen quadrant: `0` upper left, `1` upper right, `2` lower left, `3` lower right.
 
-Dynamic mode: signed number|name - Pipe separated temperature as a signed floating point (or - for no value) and the name of the temperature to display. Examples: -3.5|Kitchen, 0.0|Bedroom, 1.0|Entry, -|Backside
+Payload: `signed number|name` - pipe separated temperature as a signed floating point (or `-` for no value) and the name to display. Examples: `-3.5|Kitchen`, `0.0|Bedroom`, `1.0|Entry`, `-|Backside`.
 
-### m5/request/update
+**Publish these retained.** The broker then replays the last value the instant the display subscribes, so the screen is correct after a reboot or a WiFi drop without any handshake. The display subscribes at QoS 1.
 
-Publish: The M5 will send a request to update at certain times (i.e. when starting up and button B pressed), with the payload true. Your server should then publish updates on the m5/temperature/[0-3] topics.
+A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 15 minutes) is redrawn greyed out, so a dead sensor looks dead instead of showing a stale number forever. The same grey is used for a `-` reading.
+
+### m5/status/availability
+
+Publish, retained: `online` when the display connects, and `offline` published by the broker as the Last Will if the connection drops without a clean disconnect. Lets the rest of your system tell a quiet display from a dead one.
 
 ### m5/status/sleep
 
@@ -41,7 +49,19 @@ Subscription: When a message is received on this topic, the screen will go to sl
 
 ### m5/status/wake
 
-Subscription: When a message is received on this topic, the screen will wake, and present current values. (Recommendation, make sure that your server send updates on the m5/temperature/[0-3] topics at the same time).
+Subscription: When a message is received on this topic, the screen will wake and repaint from the values it already holds. No republish needed from your side.
+
+### m5/request/update (removed)
+
+Previously the display published `true` here to ask for a refresh, because values were not retained. Retained messages replace it: button B now forces a reconnect, which resubscribes and makes the broker replay everything. If your publisher still listens on this topic, it is safe to leave it - the display no longer uses it.
+
+## Buttons
+
+| Button | Action                                                      |
+| ------ | ----------------------------------------------------------- |
+| A      | Wake the display and repaint                                 |
+| B      | Refresh: reconnect, resubscribe and pull retained values     |
+| C      | Put the display to sleep                                     |
 
 ## See more
 

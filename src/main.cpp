@@ -16,9 +16,43 @@ WiFiClient wifi_transport_layer;
 SSLClient secure_presentation_layer(&wifi_transport_layer);
 MQTT mqtt(secure_presentation_layer);
 
+// Centre dot: a traffic light for faults, a blip for activity.
+//
+// While connected and idle it is painted in the base colour, i.e. invisible.
+// Every inbound message flashes it green for ACTIVITY_BLIP_MS. Anything wrong
+// with WiFi or the broker shows as a persistent fault colour instead.
+static uint32_t activityAt = 0;
+static bool activityPending = false;
+
 void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 {
+  activityAt = millis();
+  activityPending = true;
   state.update(topic, payload, length);
+}
+
+static void paintDot(bool wifiConnected, bool mqttConnected)
+{
+  if (!wifiConnected)
+  {
+    printer.dot(swifi.statusColor());
+    return;
+  }
+  if (!mqttConnected)
+  {
+    printer.dot(mqtt.statusColor());
+    return;
+  }
+
+  // Unsigned subtraction, so this survives the millis() rollover.
+  if (activityPending && (millis() - activityAt) < ACTIVITY_BLIP_MS)
+  {
+    printer.dot(TFT_GREEN);
+    return;
+  }
+
+  activityPending = false;
+  printer.dot(M5.Display.getBaseColor());
 }
 
 void setup()
@@ -54,17 +88,15 @@ void loop()
 
   // --- Connectivity --------------------------------------------------------
   wl_status_t status = swifi.loop();
-  if (status == WL_CONNECTED)
+  bool wifiConnected = (status == WL_CONNECTED);
+  bool mqttConnected = false;
+  if (wifiConnected)
   {
     // The broker replays every retained topic when we resubscribe, so a fresh
     // connection repopulates the screen on its own. No update request needed.
-    mqtt.loop();
-    printer.dot(mqtt.statusColor());
+    mqttConnected = mqtt.loop();
   }
-  else
-  {
-    printer.dot(swifi.statusColor());
-  }
+  paintDot(wifiConnected, mqttConnected);
 
   // Grey out quadrants whose sensor has gone quiet.
   state.tick();

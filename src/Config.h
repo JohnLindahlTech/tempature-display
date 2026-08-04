@@ -142,6 +142,14 @@
 #define MQTT_KEEPALIVE_SECONDS 30
 #endif
 
+// How long the centre dot flashes when an MQTT message arrives. The dot is a
+// traffic indicator, not a status light: while connected and idle it stays dark
+// and only blips on activity. Fault colours (see StickyWiFi/MQTT statusColor)
+// are persistent, so a problem stays visible.
+#ifndef ACTIVITY_BLIP_MS
+#define ACTIVITY_BLIP_MS 250
+#endif
+
 // A quadrant that has not received a message for this long is drawn greyed out,
 // so a dead sensor is visibly dead instead of showing a stale number forever.
 // Set to 0 to disable staleness entirely.

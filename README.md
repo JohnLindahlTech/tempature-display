@@ -55,6 +55,16 @@ Subscription: When a message is received on this topic, the screen will wake and
 
 Previously the display published `true` here to ask for a refresh, because values were not retained. Retained messages replace it: button B now forces a reconnect, which resubscribes and makes the broker replay everything. If your publisher still listens on this topic, it is safe to leave it - the display no longer uses it.
 
+## Status dot
+
+The dot in the centre of the grid is a traffic indicator, not a status light:
+
+- **Dark** - connected and idle. Nothing to report.
+- **Green blip** - a message arrived. Lasts `ACTIVITY_BLIP_MS` (default 250 ms).
+- **Persistent colour** - something is wrong. Red/brown/magenta come from the WiFi state, orange/cyan/yellow from the broker state; see `statusColor()` in [src/StickyWiFi.cpp](./src/StickyWiFi.cpp) and [src/MQTT.cpp](./src/MQTT.cpp).
+
+So a steady colour always means a fault, and a healthy display sits dark and winks on traffic.
+
 ## Buttons
 
 | Button | Action                                                      |

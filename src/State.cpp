@@ -79,25 +79,31 @@ void State::update(char *topic, uint8_t *payload, unsigned int length)
 
 void State::split(char source[], unsigned int length, char t1[], char t2[])
 {
-  int foundDelimiter = -1;
   char posChar = '\0';
   memset(t1, '\0', BUFFER_SIZE);
   memset(t2, '\0', BUFFER_SIZE);
 
+  // Everything before the first delimiter goes to t1, the rest to t2.
+  // Only the first delimiter splits; any later ones belong to t2.
+  // A payload can be longer than BUFFER_SIZE (PubSubClient allows 256), so
+  // each side is truncated at BUFFER_SIZE - 1 to keep the null terminator.
+  char *target = t1;
+  unsigned int written = 0;
+
   for (unsigned int i = 0; i < length; i += 1)
   {
     posChar = (char)source[i];
-    if (posChar == PAYLOAD_DELIMITER)
+    if (posChar == PAYLOAD_DELIMITER && target == t1)
     {
-      foundDelimiter = i;
+      target = t2;
+      written = 0;
+      continue;
     }
-    else if (foundDelimiter >= 0)
+
+    if (written < BUFFER_SIZE - 1)
     {
-      t2[i - (foundDelimiter + 1)] = posChar;
-    }
-    else
-    {
-      t1[i] = posChar;
+      target[written] = posChar;
+      written += 1;
     }
   }
 }

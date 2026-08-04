@@ -4,7 +4,7 @@
 #include <PubSubClient.h>
 #include <set>
 
-const long backOffTimeout = 5000;
+const uint32_t backOffTimeout = 5000;
 
 MQTT::MQTT(SSLClient &sslClient)
 {
@@ -32,7 +32,9 @@ void MQTT::setCallback(std::function<void(char *, uint8_t *, unsigned int)> call
 boolean MQTT::loop()
 {
   _client.loop();
-  long now = millis();
+  // Unsigned, so the subtraction below stays correct across the millis()
+  // rollover at ~49 days of uptime.
+  uint32_t now = millis();
   boolean connected = _client.connected();
   if (connected)
   {
@@ -44,11 +46,13 @@ boolean MQTT::loop()
     // Not connected, but enough time has passed to try again.
     _lastReconnectAttempt = now;
     connected = _client.connect(_clientId, _user, _password);
-    if (connected && !_subscriptionTopics.empty())
+    if (connected)
     {
-      for (char *topic : _subscriptionTopics)
+      // Re-apply subscriptions directly; calling subscribe() here would
+      // insert into the same set we are iterating over.
+      for (const std::string &topic : _subscriptionTopics)
       {
-        subscribe(topic);
+        _client.subscribe(topic.c_str());
       }
     }
   }

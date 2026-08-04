@@ -1,8 +1,8 @@
-#include "StickyWifi.h"
+#include "StickyWiFi.h"
 #include <WiFi.h>
 #include <M5Unified.h>
 
-const long backOffTimeout = 5000;
+const uint32_t backOffTimeout = 5000;
 
 StickyWiFi::StickyWiFi()
 {
@@ -22,7 +22,9 @@ wl_status_t StickyWiFi::init(char *ssid, char *passphrase)
 
 wl_status_t StickyWiFi::loop()
 {
-  long now = millis();
+  // Unsigned, so the subtraction below stays correct across the millis()
+  // rollover at ~49 days of uptime.
+  uint32_t now = millis();
   _status = WiFi.status();
   if (_status == WL_CONNECTED)
   {

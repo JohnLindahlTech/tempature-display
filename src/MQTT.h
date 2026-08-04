@@ -2,6 +2,7 @@
 #include <SSLClient.h>
 #include <PubSubClient.h>
 #include <set>
+#include <string>
 
 #ifndef MQTT_h
 #define MQTT_h
@@ -29,8 +30,9 @@ private:
   char *_user;
   char *_password;
   std::function<void(char *, uint8_t *, unsigned int)> _callback;
-  long _lastReconnectAttempt;
-  std::set<char *> _subscriptionTopics;
+  uint32_t _lastReconnectAttempt;
+  // Keyed by topic text, not by pointer, and owns a copy of each topic.
+  std::set<std::string> _subscriptionTopics;
 };
 
 #endif

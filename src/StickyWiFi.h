@@ -17,7 +17,7 @@ private:
   char *_ssid;
   char *_passphrase;
   wl_status_t _status;
-  long _lastReconnectAttempt;
+  uint32_t _lastReconnectAttempt;
 };
 
 #endif

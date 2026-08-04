@@ -13,7 +13,8 @@ StickyWiFi::StickyWiFi()
       _passphrase(nullptr),
       _status(WL_IDLE_STATUS),
       _lastReconnectAttempt(0),
-      _timeSynced(false)
+      _timeSynced(false),
+      _timeRequested(false)
 {
 }
 
@@ -45,9 +46,19 @@ void StickyWiFi::onConnected()
     return;
   }
 
-  // Non-blocking: kick SNTP off and let loop() notice when the clock lands.
+  // Kick SNTP off exactly once per association and let loop() notice when the
+  // clock lands. configTime() does sntp_stop() + sntp_init() internally, so
+  // calling it every iteration restarts the query before any reply arrives -
+  // the clock would never sync at all.
+  if (_timeRequested)
+  {
+    return;
+  }
+  _timeRequested = true;
+
   // Without this the device sits at 1970 and mbedTLS cannot meaningfully check
   // the broker certificate's notBefore/notAfter dates.
+  LOG("wifi: requesting time from %s", NTP_SERVER);
   configTime(0, 0, NTP_SERVER);
 }
 
@@ -76,6 +87,9 @@ wl_status_t StickyWiFi::loop()
     // Disconnect first to clean up.
     LOG("wifi: %s, retrying", printStatus(_status));
     WiFi.disconnect();
+    // Re-request the time after reassociating; the previous query died with
+    // the old association. Already-synced clocks stay synced.
+    _timeRequested = false;
     _lastReconnectAttempt = now;
     _status = WiFi.begin(_ssid, _passphrase);
   }

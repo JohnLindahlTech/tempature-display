@@ -29,4 +29,5 @@ private:
   wl_status_t _status;
   uint32_t _lastReconnectAttempt;
   bool _timeSynced;
+  bool _timeRequested;
 };

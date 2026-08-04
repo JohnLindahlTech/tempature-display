@@ -43,13 +43,18 @@ A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 15 minutes) is 
 
 Publish, retained: `online` when the display connects, and `offline` published by the broker as the Last Will if the connection drops without a clean disconnect. Lets the rest of your system tell a quiet display from a dead one.
 
-### m5/status/sleep
+### m5/status/sleep and m5/status/wake
 
-Subscription: When a message is received on this topic, the screen will go to sleep, updates will continue in the background, this is to save the display, but does not conserve battery.
+Subscription. A message on `sleep` blanks the screen (updates continue in the background; this saves the display but does not conserve battery). A message on `wake` wakes it and repaints from the values it already holds - no republish needed from your side.
 
-### m5/status/wake
-
-Subscription: When a message is received on this topic, the screen will wake and repaint from the values it already holds. No republish needed from your side.
+> **Do not publish these retained.** These two topics are *events*, not *state*. A retained message is replayed to every client the moment it subscribes, so a retained `sleep` puts the display to sleep on every single connect and reconnect - which looks exactly like a device that boots to a black screen and hangs. Press button A to wake it, then clear the retained message:
+>
+> ```sh
+> mosquitto_pub -h <broker> -t m5/status/sleep -r -n   # -n = empty payload, clears the retain
+> mosquitto_pub -h <broker> -t m5/status/wake  -r -n
+> ```
+>
+> In Node-RED that is the `mqtt out` node with **Retain** left as `false`. Retain belongs on `m5/temperature/[0-3]`, where replaying the last value is exactly what you want.
 
 ### m5/request/update (removed)
 

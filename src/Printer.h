@@ -30,6 +30,12 @@ public:
   // Connection indicator in the middle of the grid. Redraws only on change.
   void dot(int32_t color);
 
+  // Forgets the last dot colour, so the next dot() repaints unconditionally.
+  // Needed after a panel sleep/wake, where the pixels are gone but the colour
+  // has not changed - without this the indicator would stay blank until the
+  // connection status happened to change.
+  void invalidateDot();
+
 private:
   void origin(uint8_t index, int32_t &x, int32_t &y) const;
   void box(int32_t x, int32_t y, int32_t color);

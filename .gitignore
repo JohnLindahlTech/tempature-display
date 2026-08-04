@@ -6,3 +6,5 @@
 
 src/overrides.h
 src/credentials.h
+src/overrides.bak.h
+src/credentials.bak.h

@@ -158,6 +158,10 @@ void State::tick()
 
 void State::redraw()
 {
+  // The panel may have lost its pixels across a sleep/wake, so the status dot
+  // has to be repainted too even though its colour has not changed. loop()
+  // repaints it on the next iteration.
+  _printer->invalidateDot();
   for (uint8_t i = 0; i < SLOT_COUNT; i += 1)
   {
     render(i);

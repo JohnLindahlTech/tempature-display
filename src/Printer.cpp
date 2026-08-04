@@ -58,6 +58,11 @@ void Printer::dot(int32_t color)
   M5.Display.fillCircle(_width / 2, _height / 2, frameRadius / 2, color);
 }
 
+void Printer::invalidateDot()
+{
+  _dotColor = -1;
+}
+
 void Printer::box(int32_t x, int32_t y, int32_t color)
 {
   int32_t xPadded = x + framePadding;

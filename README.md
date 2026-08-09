@@ -29,6 +29,44 @@ Serial logging is on by default at 115200 baud (`pio device monitor`). Build wit
 
 ## MQTT
 
+Every topic the display touches, at a glance:
+
+| Topic                    | Direction  | Retain | Payload                        | Read by the device? |
+| ------------------------ | ---------- | ------ | ------------------------------ | ------------------- |
+| `m5/temperature/[0-3]`   | subscribe  | **yes**| `<temperature>\|<name>`         | yes, parsed         |
+| `m5/status/sleep`        | subscribe  | **no** | anything - ignored             | no, topic only      |
+| `m5/status/wake`         | subscribe  | **no** | anything - ignored             | no, topic only      |
+| `m5/status/availability` | publish    | yes    | `online` / `offline` (the Will)| n/a                 |
+
+The display subscribes at QoS 1.
+
+### Payload size limit: 256 bytes, silently enforced
+
+This one has bitten us, so it goes first.
+
+PubSubClient reads each message into a fixed buffer, `MQTT_MAX_PACKET_SIZE`, which defaults to **256 bytes for the whole MQTT packet** - not just the payload. Anything larger is **discarded before the callback runs**:
+
+```c
+// PubSubClient.cpp, readPacket()
+if (!this->stream && idx > this->bufferSize) {
+    len = 0; // This will cause the packet to be ignored.
+}
+```
+
+There is no error, no log line and no status-dot blip. The message simply never happened as far as the device is concerned, while `mosquitto_sub` on the same broker shows it arriving perfectly. Every topic keeps working except the one whose payload grew.
+
+The budget, for a QoS 1 publish:
+
+```
+1 (header) + 1-2 (remaining length) + 2 (topic length) + topic + 2 (packet id) + payload  <=  256
+```
+
+For `m5/status/sleep` (15 characters) that leaves **234 bytes of payload**. As a rule of thumb, keep any payload under ~200 bytes and you will never think about this again.
+
+> **Do not forward a whole zigbee2mqtt message onto these topics.** A Hue motion sensor's JSON is 239 bytes, which makes a 261-byte packet: five bytes over, silently dropped, sleep and wake both dead. In Node-RED put a `change` node before the `mqtt out` node setting `msg.payload` to a timestamp. That keeps the message useful for debugging and costs 13 bytes.
+
+If a topic ever genuinely needs a large payload, raising `setBufferSize()` only moves the cliff. The real fix is a bounded payload at the publisher: these are control topics, and control topics should not carry unbounded state.
+
 ### m5/temperature/[0-3]
 
 Subscription, one topic per screen quadrant: `0` upper left, `1` upper right, `2` lower left, `3` lower right.
@@ -37,7 +75,7 @@ Payload: `signed number|name` - pipe separated temperature as a signed floating 
 
 **Publish these retained.** The broker then replays the last value the instant the display subscribes, so the screen is correct after a reboot or a WiFi drop without any handshake. The display subscribes at QoS 1.
 
-A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 15 minutes) is redrawn greyed out, so a dead sensor looks dead instead of showing a stale number forever. The same grey is used for a `-` reading.
+A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 90 minutes) is redrawn greyed out, so a dead sensor looks dead instead of showing a stale number forever. The same grey is used for a `-` reading.
 
 ### m5/status/availability
 
@@ -46,6 +84,8 @@ Publish, retained: `online` when the display connects, and `offline` published b
 ### m5/status/sleep and m5/status/wake
 
 Subscription. A message on `sleep` blanks the screen (updates continue in the background; this saves the display but does not conserve battery). A message on `wake` wakes it and repaints from the values it already holds - no republish needed from your side.
+
+**The payload is ignored entirely.** `State::update` routes on the topic and never looks at the bytes, so `1`, a timestamp or an empty message all behave identically. A millisecond timestamp is the useful choice: it costs 13 bytes and lets you line up the broker's clock against the device's when something looks out of order. What the payload must not be is *large* - see the 256-byte limit above.
 
 > **Do not publish these retained.** These two topics are *events*, not *state*. A retained message is replayed to every client the moment it subscribes, so a retained `sleep` puts the display to sleep on every single connect and reconnect - which looks exactly like a device that boots to a black screen and hangs. Press button A to wake it, then clear the retained message:
 >
@@ -77,6 +117,27 @@ So a steady colour always means a fault, and a healthy display sits dark and win
 | A      | Wake the display and repaint                                 |
 | B      | Refresh: reconnect, resubscribe and pull retained values     |
 | C      | Put the display to sleep                                     |
+
+## Debugging MQTT
+
+Watch everything the display cares about, with sizes, and you can usually see the fault directly:
+
+```sh
+mosquitto_sub -h <broker> -p 8883 -u <user> -P <pass> --capath /etc/ssl/certs \
+  -v -t 'm5/#' -F '%I %t (%l bytes) %p'
+```
+
+`%l` is the payload length. Add `-R` to hide retained replay, or drop it to inspect exactly what a fresh subscriber - i.e. the display after a reboot - would be handed.
+
+> **The trap.** Testing a topic by hand with `-m 1` sends a 20-byte packet, which always works. That exonerates the firmware and sends you hunting upstream, where the flow also looks fine because the broker really is receiving and delivering the message. **Reproduce with a payload the same size as the real one**, or you will not see the failure at all.
+
+When sleep or wake does nothing, in order:
+
+1. **Is the message on the broker?** If not, it is the publisher; the display is innocent.
+2. **How big is it?** Over ~234 bytes for these topics and it is being dropped silently. This is the most likely answer.
+3. **Is it retained?** `mosquitto_sub -v -t 'm5/status/#'` right after connecting. A retained `sleep` re-sleeps the display on every reconnect; clear it with `-r -n`.
+4. **Is the device connected at all?** `m5/status/availability` should read `online`. Remember it is retained, so a stale `online` is possible if the broker never fired the Will.
+5. **Only now suspect the firmware.** Serial at 115200 logs `state: sleep` / `state: wake` on every handled message; silence there with the message confirmed on the broker means it never reached the callback, which points back at step 2.
 
 ## See more
 

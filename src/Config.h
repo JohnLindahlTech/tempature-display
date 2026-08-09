@@ -154,7 +154,7 @@
 // so a dead sensor is visibly dead instead of showing a stale number forever.
 // Set to 0 to disable staleness entirely.
 #ifndef STALE_TIMEOUT_MS
-#define STALE_TIMEOUT_MS (15UL * 60UL * 1000UL)
+#define STALE_TIMEOUT_MS (90UL * 60UL * 1000UL)
 #endif
 
 // --- Debug -----------------------------------------------------------------

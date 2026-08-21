@@ -175,6 +175,14 @@
 #endif
 #endif
 
+// Retained: the build stamp of the running firmware, published on every
+// broker connect. Without it a silently failed OTA and a successful one look
+// identical - espota reports 100% either way - so this is how you confirm from
+// the outside that the image you pushed is the one actually running.
+#ifndef VERSION_TOPIC
+#define VERSION_TOPIC "m5/status/version"
+#endif
+
 // --- Payload parsing -------------------------------------------------------
 
 // Capacity of each name/temperature buffer, including the null terminator.

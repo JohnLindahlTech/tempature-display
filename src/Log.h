@@ -6,6 +6,12 @@
 // Serial logging. Previously the only way to see what the firmware was doing
 // was the colour of a 5px dot, which made anything network-related painful to
 // diagnose. LOG_* compiles to nothing when DEBUG is 0.
+//
+// This used to stamp __DATE__ / __TIME__ here. Those freeze when THIS file's
+// including translation unit is compiled, so editing any other .cpp left the
+// boot line reporting the previous build - a stamp that is right most of the
+// time, which is worse than none. main.cpp logs firmwareVersion() instead; see
+// src/Version.h.
 
 #if DEBUG
 
@@ -15,7 +21,7 @@
     Serial.begin(SERIAL_BAUD);  \
     delay(50);                  \
     Serial.println();           \
-    Serial.println("[boot] " __FILE__ " " __DATE__ " " __TIME__); \
+    Serial.println("[boot]");                                 \
   } while (0)
 
 #define LOG(fmt, ...)                                       \

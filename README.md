@@ -27,11 +27,12 @@ Both files are **partial**: define only the macros you want to change, everythin
 
 Serial logging is on by default at 115200 baud (`pio device monitor`). Build with `-D DEBUG=0` to compile it out.
 
-> Put build flags in the `[env:...]` block, not in `[common]`. PlatformIO does
-> not merge `[common]` automatically - an env has to pull it in explicitly with
-> `build_flags = ${common.build_flags}`, and none currently do. Flags placed
-> there are silently ignored, which is why `VERSION` is not actually defined in
-> the firmware today.
+> Put build flags in the `[env:...]` block, or in `[common]` *and* reference it.
+> PlatformIO does not merge `[common]` automatically - an env has to pull it in
+> with `build_flags = ${common.build_flags}`, which the env now does. Before
+> that it did not, so the flags sitting in `[common]` were silently ignored and
+> `-D DEBUG=1` never reached the compiler; serial logging worked only because
+> `Config.h` defaults `DEBUG` to 1.
 
 ## OTA updates
 
@@ -243,6 +244,7 @@ Every topic the display touches, at a glance:
 | `m5/status/sleep`        | subscribe  | **no** | anything - ignored             | no, topic only      |
 | `m5/status/wake`         | subscribe  | **no** | anything - ignored             | no, topic only      |
 | `m5/status/availability` | publish    | yes    | `online` / `offline` (the Will)| n/a                 |
+| `m5/status/version`      | publish    | yes    | build stamp, e.g. `a2c26fd-dirty 2026-08-21T23:49:01+0200` | n/a |
 
 The display subscribes at QoS 1.
 
@@ -286,6 +288,31 @@ A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 90 minutes) is 
 ### m5/status/availability
 
 Publish, retained: `online` when the display connects, and `offline` published by the broker as the Last Will if the connection drops without a clean disconnect. Lets the rest of your system tell a quiet display from a dead one.
+
+### m5/status/version
+
+Publish, retained: the build stamp of the running firmware, republished on every
+broker connect.
+
+This exists because a silently failed OTA and a successful one look identical
+from the pushing end - espota reports 100% either way. Read this topic and you
+know which image is actually running, rather than inferring it.
+
+The stamp is `<git describe> <ISO 8601 build time>`, and **the timestamp is what
+makes it unique**. This project is flashed straight from a working tree that is
+essentially always dirty, so `git describe --dirty` alone returns an identical
+string for every build between commits and would answer nothing. The hash rides
+along for provenance.
+
+`scripts/version.py` regenerates the header into `$BUILD_DIR` before every
+build, so the source tree stays clean and exactly one translation unit
+(`src/Version.cpp`) recompiles when the stamp changes - a no-change rebuild
+compiles one file and relinks.
+
+> `Log.h` deliberately does **not** stamp `__DATE__` / `__TIME__` any more.
+> Those freeze when their including translation unit is compiled, so editing any
+> other `.cpp` left the boot line reporting the *previous* build. A stamp that
+> is right most of the time is worse than no stamp at all.
 
 ### m5/status/sleep and m5/status/wake
 

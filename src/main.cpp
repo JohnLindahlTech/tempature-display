@@ -8,6 +8,7 @@
 #include "Printer.h"
 #include "State.h"
 #include "StickyWiFi.h"
+#include "Version.h"
 
 Printer printer;
 State state(&printer);
@@ -60,6 +61,7 @@ static void paintDot(bool wifiConnected, bool mqttConnected)
 void setup()
 {
   LOG_BEGIN();
+  LOG("firmware %s", firmwareVersion());
 
   auto cfg = M5.config();
   cfg.led_brightness = 0;
@@ -135,7 +137,14 @@ void loop()
   {
     // The broker replays every retained topic when we resubscribe, so a fresh
     // connection repopulates the screen on its own. No update request needed.
-    mqttConnected = mqtt.loop();
+    // justConnected fires on the call that (re)established the session, which
+    // is the moment to restate anything the broker should hold retained.
+    bool justConnected = false;
+    mqttConnected = mqtt.loop(&justConnected);
+    if (justConnected)
+    {
+      mqtt.publish(VERSION_TOPIC, firmwareVersion(), true);
+    }
   }
   paintDot(wifiConnected, mqttConnected);
 

@@ -30,6 +30,15 @@ public:
   // Connection indicator in the middle of the grid. Redraws only on change.
   void dot(int32_t color);
 
+  // Full-screen takeover, used while a firmware update is running. The grid is
+  // meaningless at that point and the panel is the only progress indicator the
+  // device has. Follow it with progress() to draw the bar.
+  void banner(const char *title, const char *detail, int32_t color);
+
+  // Fills the bar drawn by banner(). Only ever grows, so repeated calls are
+  // cheap: each one paints just the newly completed sliver.
+  void progress(uint8_t percent, int32_t color);
+
   // Forgets the last dot colour, so the next dot() repaints unconditionally.
   // Needed after a panel sleep/wake, where the pixels are gone but the colour
   // has not changed - without this the indicator would stay blank until the
@@ -44,4 +53,5 @@ private:
   int32_t _width;
   int32_t _height;
   int32_t _dotColor;
+  int32_t _progressFilled; // px of the progress bar already painted
 };

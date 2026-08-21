@@ -28,11 +28,24 @@
 
 // --- Network ---------------------------------------------------------------
 
-#ifndef SSID
-#define SSID "Wifi-SSID"
+// WIFI_SSID, not SSID. The Arduino core's WiFi.h declares
+// WiFiSTAClass::SSID(), so a `#define SSID "..."` reaching the preprocessor
+// first rewrites that declaration into a string literal - and the compiler then
+// reports a syntax error inside WiFi.h, with nothing visibly wrong at the point
+// of use. The short name is deliberately not accepted; see the #error below.
+#ifndef WIFI_SSID
+#define WIFI_SSID "Wifi-SSID"
 #endif
-#ifndef PASSPHRASE
-#define PASSPHRASE "Wifi-passphrase"
+#ifndef WIFI_PASSPHRASE
+#define WIFI_PASSPHRASE "Wifi-passphrase"
+#endif
+
+// Turns the inscrutable failure above into a one-line diagnostic. This can only
+// trip if credentials.h or overrides.h defines SSID as a macro: by the time any
+// translation unit reaches here having already included WiFi.h, SSID is a member
+// function name and not a macro at all, so there are no false positives.
+#ifdef SSID
+#error "Rename SSID to WIFI_SSID in src/credentials.h - SSID collides with WiFiSTAClass::SSID in the Arduino core."
 #endif
 
 // NTP is not cosmetic: mbedTLS can only check the broker certificate's
@@ -113,6 +126,38 @@
 #endif
 #ifndef AVAILABILITY_OFFLINE
 #define AVAILABILITY_OFFLINE "offline"
+#endif
+
+// --- OTA -------------------------------------------------------------------
+//
+// The board's default partition table (default_16MB.csv) already provides two
+// 6.25 MB app slots plus otadata, so over-the-air updates need no flash layout
+// change. Upload over the air with the dedicated env in platformio.ini:
+//
+//   pio run -e m5stack-core2-ota -t upload
+//
+// The first flash must still go over USB - see "OTA updates" in README.md.
+
+#ifndef OTA_ENABLED
+#define OTA_ENABLED 1
+#endif
+
+// Also the mDNS name, so the device answers at <hostname>.local.
+#ifndef OTA_HOSTNAME
+#define OTA_HOSTNAME "m5-temperature-display"
+#endif
+
+#ifndef OTA_PORT
+#define OTA_PORT 3232
+#endif
+
+// Anyone on the LAN can push firmware to an unauthenticated listener. Set this
+// in src/credentials.h alongside the WiFi passphrase.
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD ""
+#if OTA_ENABLED
+#warning "OTA_PASSWORD not set - over-the-air updates are unauthenticated. Define it in src/credentials.h."
+#endif
 #endif
 
 // --- Payload parsing -------------------------------------------------------

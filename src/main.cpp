@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "MQTT.h"
+#include "OTA.h"
 #include "Printer.h"
 #include "State.h"
 #include "StickyWiFi.h"
@@ -15,6 +16,7 @@ StickyWiFi swifi;
 WiFiClient wifi_transport_layer;
 SSLClient secure_presentation_layer(&wifi_transport_layer);
 MQTT mqtt(secure_presentation_layer);
+OTA ota;
 
 // Centre dot: a traffic light for faults, a blip for activity.
 //
@@ -78,7 +80,35 @@ void setup()
   mqtt.subscribe(WAKE);
   mqtt.subscribe(SLEEP);
 
-  swifi.init(SSID, PASSPHRASE);
+  swifi.init(WIFI_SSID, WIFI_PASSPHRASE);
+
+#if OTA_ENABLED
+  ota.init(OTA_HOSTNAME, OTA_PASSWORD);
+
+  ota.onStart([]() {
+    // Writing the image blocks this loop for far longer than
+    // MQTT_KEEPALIVE_SECONDS, so the broker would otherwise decide we died and
+    // fire the Last Will. Say "offline" deliberately and disconnect cleanly, so
+    // an update looks like an update rather than a crash.
+    mqtt.publish(AVAILABILITY_TOPIC, AVAILABILITY_OFFLINE, true);
+    mqtt.forceReconnect();
+
+    M5.Display.wakeup();
+    printer.banner("Updating", "do not power off", TFT_GOLD);
+  });
+
+  ota.onProgress([](uint8_t percent) {
+    printer.progress(percent, TFT_GREEN);
+  });
+
+  ota.onError([](const char *reason) {
+    printer.banner("Update failed", reason, TFT_RED);
+    delay(3000);
+    // Back to the temperature grid; the values themselves were never lost.
+    printer.clear(TFT_GOLD);
+    state.redraw();
+  });
+#endif
 }
 
 void loop()
@@ -89,6 +119,17 @@ void loop()
   // --- Connectivity --------------------------------------------------------
   wl_status_t status = swifi.loop();
   bool wifiConnected = (status == WL_CONNECTED);
+
+#if OTA_ENABLED
+  ota.loop(wifiConnected);
+  if (ota.inProgress())
+  {
+    // The panel belongs to the update screen and the broker connection is
+    // already closed. Nothing else should touch either until we reboot.
+    return;
+  }
+#endif
+
   bool mqttConnected = false;
   if (wifiConnected)
   {

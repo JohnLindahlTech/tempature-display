@@ -7,7 +7,7 @@ static const int32_t frameRadius = 10;
 static const int32_t textTopPadding = framePadding * 2;
 
 // -1 is not a valid 16/24-bit colour, so the first dot() always paints.
-Printer::Printer() : _width(0), _height(0), _dotColor(-1) {}
+Printer::Printer() : _width(0), _height(0), _dotColor(-1), _progressFilled(0) {}
 
 void Printer::begin()
 {
@@ -85,4 +85,53 @@ void Printer::text(const char *name, const char *temperature, int32_t x, int32_t
   M5.Display.drawString(name, xCentre, yName, &FreeSans12pt7b);
   M5.Display.setTextDatum(MC_DATUM);
   M5.Display.drawString(temperature, xCentre, yTemperature, &FreeSansBold24pt7b);
+}
+
+// --- Firmware update screen ------------------------------------------------
+
+static const int32_t barHeight = 24;
+
+void Printer::banner(const char *title, const char *detail, int32_t color)
+{
+  M5.Display.startWrite();
+  M5.Display.fillScreen(M5.Display.getBaseColor());
+
+  M5.Display.setTextColor(color);
+  M5.Display.setTextDatum(MC_DATUM);
+  M5.Display.drawString(title, _width / 2, _height / 3, &FreeSansBold24pt7b);
+  M5.Display.drawString(detail, _width / 2, _height / 3 + 40, &FreeSans12pt7b);
+
+  int32_t x = framePadding * 2;
+  int32_t y = _height - framePadding * 2 - barHeight;
+  M5.Display.drawRect(x, y, _width - framePadding * 4, barHeight, color);
+  M5.Display.endWrite();
+
+  _progressFilled = 0;
+
+  // The grid is gone, so the cached dot colour no longer describes the panel.
+  invalidateDot();
+}
+
+void Printer::progress(uint8_t percent, int32_t color)
+{
+  if (percent > 100)
+  {
+    percent = 100;
+  }
+
+  int32_t x = framePadding * 2;
+  int32_t y = _height - framePadding * 2 - barHeight;
+  int32_t inner = _width - framePadding * 4 - 4;
+  int32_t target = (inner * percent) / 100;
+
+  if (target <= _progressFilled)
+  {
+    return;
+  }
+
+  // Paint only the new sliver. Redrawing the whole bar every percent would add a
+  // visible flicker and slow the transfer.
+  M5.Display.fillRect(x + 2 + _progressFilled, y + 2,
+                      target - _progressFilled, barHeight - 4, color);
+  _progressFilled = target;
 }

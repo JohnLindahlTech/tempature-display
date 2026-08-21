@@ -27,6 +27,180 @@ Both files are **partial**: define only the macros you want to change, everythin
 
 Serial logging is on by default at 115200 baud (`pio device monitor`). Build with `-D DEBUG=0` to compile it out.
 
+> Put build flags in the `[env:...]` block, not in `[common]`. PlatformIO does
+> not merge `[common]` automatically - an env has to pull it in explicitly with
+> `build_flags = ${common.build_flags}`, and none currently do. Flags placed
+> there are silently ignored, which is why `VERSION` is not actually defined in
+> the firmware today.
+
+## OTA updates
+
+The board's default partition table (`default_16MB.csv`) already provides two
+6.25 MB app slots and an `otadata` partition, so nothing about the flash layout
+had to change - the firmware is ~1.13 MB, or 17% of one slot.
+
+### Setup, once
+
+Add the password to `src/credentials.h`, and export the same value in whichever
+shell you upload from:
+
+```cpp
+#define OTA_PASSWORD "..."     // src/credentials.h (gitignored)
+```
+
+```sh
+export OTA_PASSWORD='...'      # must match the above
+```
+
+Leave the macro out and the build warns - an unauthenticated listener lets
+anyone who can reach the device push firmware to it. The shell variable is read
+by `platformio.ini` via `${sysenv.OTA_PASSWORD}`, so the secret stays out of the
+tracked file. Forget the `export` and espota reports a bare
+`Authentication Failed`, which looks like a wrong password rather than a missing
+one.
+
+### The first flash has to be serial
+
+A device cannot receive an update it does not yet know how to accept. Flash once
+over USB, then OTA works from then on:
+
+```sh
+pio run -t upload                        # serial, the default env
+pio run -e m5stack-core2-ota -t upload   # over the air
+```
+
+Serial is deliberately the default env: a first flash, or recovering a device
+that boot-loops, should never require editing `platformio.ini`.
+
+Confirm the listener came up - it starts lazily, because `ArduinoOTA::begin()`
+needs an IP to bind and register mDNS:
+
+```
+[    3421] ota: listening as m5-temperature-display on port 3232
+```
+
+During the transfer the panel shows a progress bar, and `loop()` returns early
+so nothing else touches the display or the broker. On failure you get a red
+banner with the reason and the temperature grid comes back; the readings were
+never lost.
+
+### What happens if it dies at 50%
+
+**A failed transfer is safe.** The image is written to the *inactive* app slot,
+and the boot pointer is only moved at the very end, after the MD5 that espota
+supplied has been verified (`Updater.cpp`, `_verifyEnd()` is the only caller of
+`esp_ota_set_boot_partition`). Power loss, a WiFi drop or a truncated transfer
+therefore leaves `otadata` untouched: the device reboots into the current
+firmware, and the half-written image is inert until the next attempt overwrites
+it.
+
+**Firmware that flashes cleanly and then crashes at boot is not safe**, and this
+is the case worth respecting. Rollback is compiled in
+(`CONFIG_APP_ROLLBACK_ENABLE=y`), but the Arduino core calls
+`esp_ota_mark_app_valid_cancel_rollback()` from `initArduino()` - which runs
+*before* `setup()`. The new image is marked permanently valid before a single
+line of this project's code executes, so a panic in `setup()` boot-loops forever
+and rollback never fires. Recovery is a USB cable.
+
+The hook for fixing this is the weak `verifyRollbackLater()`: override it to
+return true, and the image stays `PENDING_VERIFY` until something in `loop()`
+decides it is healthy (WiFi plus broker connected, say) and marks it valid. Not
+currently implemented - flash a change you have not at least booted once on the
+bench with the cable attached.
+
+### Over the network: mDNS, IPs and VLANs
+
+`upload_port` takes an mDNS name purely as a convenience. Anywhere `.local` does
+not resolve - across VLANs, most commonly - put the address in directly and
+change nothing else:
+
+```ini
+upload_port = 10.20.30.40
+```
+
+The part that catches firewalls out is that the transfer is **bidirectional**:
+
+| Direction | Protocol | Port | Purpose |
+| --------- | -------- | ---- | ------- |
+| host -> device | **UDP** | 3232 | invitation: host port, image size, MD5 |
+| device -> host | **TCP** | `--host_port` | the device connects back and pulls the image |
+
+Two consequences. A rule permitting only workstation -> device is never enough,
+and the invitation is UDP, not TCP. And espota otherwise picks the callback port
+at random from 10000-60000 on every run, which no firewall rule can follow -
+hence the pinned `--host_port=45678` in `platformio.ini`.
+
+**On an IoT VLAN this is the thing that breaks.** Such segments are usually
+configured to block sessions initiated toward the trusted LAN, which is exactly
+the direction espota needs. Either allow that one inbound TCP port from the IoT
+subnet, or upload from a host already on it. MQTT is unaffected, being outbound
+to the broker.
+
+Also check NTP is reachable from the new segment: without it `StickyWiFi` never
+marks the clock synced, mbedTLS cannot check the broker certificate's validity
+dates, and TLS fails in a way that reads as a broker fault rather than a
+firewall one.
+
+Two failure modes look identical from the terminal. `No response from the ESP`
+after ten dots means the UDP invitation never landed - wrong address, or UDP
+3232 blocked. A hang *after* `Authenticating... OK` means the callback TCP
+connection is blocked. Opposite sides of the rule, same-looking symptom.
+
+On a multi-homed workstation (VPN, Docker bridges, two NICs) the device connects
+back to whatever source address the invitation came from, which the kernel picks
+by routing and may get wrong. `--host_ip=<your address on that subnet>` forces
+it; the symptom is a stall right after the invitation succeeds.
+
+The password itself is never sent in clear - it is an MD5 challenge-response
+against a server nonce. The firmware image is plaintext TCP, which is fine on a
+trusted LAN and worth knowing if it ever crosses something less trusted.
+
+### You lose the serial log
+
+`pio device monitor` is a serial connection. Stop plugging in USB and `LOG()`
+output has nowhere to go, and `monitor_filters = esp32_exception_decoder` can no
+longer turn a panic backtrace into `file:line`. Combined with the boot-crash gap
+above, that is the argument for keeping the cable reachable until network
+logging (telnet or syslog) exists.
+
+### The update looks like a crash unless you handle the Will
+
+Writing the image blocks `loop()` for far longer than `MQTT_KEEPALIVE_SECONDS`
+(default 30). Left alone, the broker concludes the display died and fires the
+Last Will, so `m5/status/availability` flips to `offline` in the middle of what
+is actually a healthy update.
+
+`ota.onStart` therefore publishes `offline` deliberately and disconnects
+cleanly, before the first packet is written. The topic ends up in the same state
+either way - the difference is that it happens on purpose, at a predictable
+moment, instead of ~45 seconds later as a timeout.
+
+The device publishes `online` again on its own when it reboots and reconnects.
+
+## WiFi credentials are WIFI_SSID / WIFI_PASSPHRASE
+
+`SSID` was a landmine. The Arduino core's `WiFi.h` declares
+`WiFiSTAClass::SSID()`, so a `#define SSID "..."` that reaches the preprocessor
+first rewrites that declaration into a string literal - and the compiler then
+reports a syntax error *inside* `WiFi.h`, with nothing visibly wrong at the
+point of use. It only ever built because `M5Unified.h` happens to include
+`WiFi.h` before `Config.h` in every translation unit. The first new `.cpp` to
+include a project header first (`src/OTA.cpp`) broke the build in a way that
+looked nothing like its cause.
+
+So `src/credentials.h` uses the prefixed names:
+
+```cpp
+#define WIFI_SSID       "your-network"
+#define WIFI_PASSPHRASE "your-passphrase"
+```
+
+The short spelling is not accepted. Defining `SSID` anywhere now trips an
+`#error` in `Config.h` naming the fix, rather than emitting the original
+error inside `WiFi.h`. That check cannot produce a false positive: in any
+translation unit that already included `WiFi.h`, `SSID` is a member function
+name and not a macro at all.
+
 ## MQTT
 
 Every topic the display touches, at a glance:

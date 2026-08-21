@@ -151,6 +151,21 @@
 #define OTA_PORT 3232
 #endif
 
+// How long a freshly flashed image must run before it is confirmed good and the
+// pending rollback is cancelled. Nothing is blocked or delayed while this runs:
+// the display and the broker behave exactly as normal, and the only deferred
+// action is a one-time flag write. It also only ever applies to the first boot
+// after an OTA push - a normal reboot, or a serial flash, is unaffected.
+//
+// The trade-off is at the two ends. Too short and firmware that panics a few
+// seconds into loop() gets confirmed before it fails. Too long and an ordinary
+// power cut during the window rolls back an image that was fine - this display
+// runs on grid power with no battery, so that is a real if unlikely event.
+// Set to 0 to confirm as soon as the OTA listener is up.
+#ifndef OTA_VALIDATE_AFTER_MS
+#define OTA_VALIDATE_AFTER_MS 60000UL
+#endif
+
 // Anyone on the LAN can push firmware to an unauthenticated listener. Set this
 // in src/credentials.h alongside the WiFi passphrase.
 #ifndef OTA_PASSWORD

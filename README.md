@@ -94,19 +94,51 @@ therefore leaves `otadata` untouched: the device reboots into the current
 firmware, and the half-written image is inert until the next attempt overwrites
 it.
 
-**Firmware that flashes cleanly and then crashes at boot is not safe**, and this
-is the case worth respecting. Rollback is compiled in
-(`CONFIG_APP_ROLLBACK_ENABLE=y`), but the Arduino core calls
-`esp_ota_mark_app_valid_cancel_rollback()` from `initArduino()` - which runs
-*before* `setup()`. The new image is marked permanently valid before a single
-line of this project's code executes, so a panic in `setup()` boot-loops forever
-and rollback never fires. Recovery is a USB cable.
+**Firmware that flashes cleanly and then crashes at boot** is handled by an
+armed rollback. The Arduino core would otherwise call
+`esp_ota_mark_app_valid_cancel_rollback()` from `initArduino()` - *before*
+`setup()` - marking a new image permanently good before any of this project's
+code runs, so a panic in `setup()` would boot-loop forever with rollback never
+firing. `src/OTA.cpp` overrides the core's weak `verifyRollbackLater()` to keep
+the image on trial instead, and confirms it only once two things hold:
 
-The hook for fixing this is the weak `verifyRollbackLater()`: override it to
-return true, and the image stays `PENDING_VERIFY` until something in `loop()`
-decides it is healthy (WiFi plus broker connected, say) and marks it valid. Not
-currently implemented - flash a change you have not at least booted once on the
-bench with the cable attached.
+1. the OTA listener is up, and
+2. the device has been running for `OTA_VALIDATE_AFTER_MS` (default 60 s).
+
+Fail either and the next reboot rolls back to the previous image automatically.
+
+The bar is deliberately **"can this image still be updated remotely"**, not "is
+everything working". Rollback exists to recover firmware that cannot be fixed
+over the air, so a live listener is the whole test. Gating on the broker instead
+would roll a perfectly good image back during a routine broker outage - solving
+nothing and breaking something.
+
+> `extern "C"` on that override is load-bearing. The core declares
+> `verifyRollbackLater()` in a `.c` file, so a C++ definition mangles its name,
+> silently fails to override the weak symbol, and leaves the old behaviour in
+> place with no error anywhere. Verify with
+> `nm firmware.elf | grep verifyRollbackLater`: `T` means the override took, `W`
+> means the core's version is still winning.
+
+None of this affects normal operation. `ESP_OTA_IMG_PENDING_VERIFY` is only ever
+set on the first boot after an OTA push - an ordinary reboot runs with the image
+already valid, and a serial flash never sets it at all. Even during the window
+nothing is blocked or delayed: the display and broker behave exactly as usual,
+and the only deferred action is a one-time flag write to `otadata`.
+
+The cost is at the edges. Too short a window and firmware that panics a few
+seconds into `loop()` gets confirmed before it fails; too long and an ordinary
+power cut during the window rolls back an image that was fine. This display runs
+on grid power with no battery, so that second case is real if unlikely - which
+is the argument for 60 seconds rather than ten minutes. Set
+`OTA_VALIDATE_AFTER_MS` to `0` to confirm as soon as the listener is up.
+
+Serial shows which path a boot took:
+
+```
+[    1204] ota: image on trial, confirming after 60000ms of uptime
+[   60012] ota: image confirmed, rollback cancelled
+```
 
 ### Over the network: mDNS, IPs and VLANs
 

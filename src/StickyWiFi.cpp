@@ -71,11 +71,20 @@ wl_status_t StickyWiFi::loop()
   {
     if (previous != WL_CONNECTED)
     {
-      LOG("wifi: connected, ip %s", WiFi.localIP().toString().c_str());
+      LOG("wifi: connected, ip %s, rssi %d dBm",
+          WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
     }
     _lastReconnectAttempt = 0;
     onConnected();
     return _status;
+  }
+
+  // The drop itself is worth a line. Without this the first sign of trouble is
+  // the retry below, up to WIFI_RETRY_INTERVAL_MS later, which makes a brief
+  // wobble and a real outage look identical in the log.
+  if (previous == WL_CONNECTED)
+  {
+    LOG("wifi: link lost (%s)", printStatus(_status));
   }
 
   // Unsigned, so the subtraction below stays correct across the millis()

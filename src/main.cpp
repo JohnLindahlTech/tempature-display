@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <SSLClient.h>
 #include <WiFi.h>
+#include <esp_system.h>
 #include "Config.h"
 #include "Log.h"
 #include "MQTT.h"
@@ -9,6 +10,35 @@
 #include "State.h"
 #include "StickyWiFi.h"
 #include "Version.h"
+
+namespace
+{
+// Why the last boot happened. A panic, a brownout or a watchdog reset all look
+// identical from the outside - the display just comes back - so without this
+// there is no way to tell a power blip from firmware falling over.
+const char *resetReasonText(esp_reset_reason_t reason)
+{
+  switch (reason)
+  {
+  case ESP_RST_POWERON:  return "power-on";
+  case ESP_RST_EXT:      return "external pin";
+  case ESP_RST_SW:       return "software";
+  case ESP_RST_PANIC:    return "PANIC";
+  case ESP_RST_INT_WDT:  return "interrupt watchdog";
+  case ESP_RST_TASK_WDT: return "task watchdog";
+  case ESP_RST_WDT:      return "other watchdog";
+  case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+  case ESP_RST_BROWNOUT: return "BROWNOUT";
+  case ESP_RST_SDIO:     return "sdio";
+  default:               return "unknown";
+  }
+}
+
+// Smallest the heap has ever been since boot. A steady figure here is the
+// cheapest evidence that nothing is leaking; a falling one is the opposite.
+uint32_t heapLowWater = UINT32_MAX;
+uint32_t lastHealthLog = 0;
+}  // namespace
 
 Printer printer;
 State state(&printer);
@@ -62,6 +92,8 @@ void setup()
 {
   LOG_BEGIN();
   LOG("firmware %s", firmwareVersion());
+  LOG("boot: reset reason %s, heap %u bytes",
+      resetReasonText(esp_reset_reason()), (unsigned)ESP.getFreeHeap());
 
   auto cfg = M5.config();
   cfg.led_brightness = 0;
@@ -113,6 +145,43 @@ void setup()
 #endif
 }
 
+#if HEALTH_INTERVAL_MS > 0
+// A slow baseline: heap, its low-water mark, link quality and uptime. Nothing
+// here is a secret, and at one line per HEALTH_INTERVAL_MS it cannot crowd out
+// the event logs that actually matter.
+void logHealth(bool wifiConnected)
+{
+  uint32_t heap = ESP.getFreeHeap();
+  if (heap < heapLowWater)
+  {
+    heapLowWater = heap;
+  }
+
+  uint32_t now = millis();
+  if (lastHealthLog == 0)
+  {
+    // Seed the timer without logging. The first call lands before WiFi has
+    // associated, so its RSSI would read 0 dBm and mean nothing; the boot line
+    // already reports startup heap.
+    lastHealthLog = now;
+    return;
+  }
+  // Unsigned, so this survives the millis() rollover at ~49 days of uptime.
+  if ((now - lastHealthLog) < HEALTH_INTERVAL_MS)
+  {
+    return;
+  }
+  lastHealthLog = now;
+
+  LOG("health: heap %u (low %u), rssi %d dBm, up %lus",
+      (unsigned)heap, (unsigned)heapLowWater,
+      wifiConnected ? (int)WiFi.RSSI() : 0,
+      (unsigned long)(now / 1000UL));
+}
+#else
+void logHealth(bool) {}
+#endif
+
 void loop()
 {
   delay(1);
@@ -121,6 +190,10 @@ void loop()
   // --- Connectivity --------------------------------------------------------
   wl_status_t status = swifi.loop();
   bool wifiConnected = (status == WL_CONNECTED);
+
+  // Runs the encrypted log listener while associated, and drops any attached
+  // watcher when the link goes away. Cheap enough to call every iteration.
+  LOG_NETWORK(wifiConnected);
 
 #if OTA_ENABLED
   ota.loop(wifiConnected);
@@ -150,6 +223,8 @@ void loop()
 
   // Grey out quadrants whose sensor has gone quiet.
   state.tick();
+
+  logHealth(wifiConnected);
 
   // --- Buttons -------------------------------------------------------------
   if (M5.BtnA.wasClicked())

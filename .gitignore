@@ -8,3 +8,8 @@ src/overrides.h
 src/credentials.h
 src/overrides.bak.h
 src/credentials.bak.h
+
+# Python tooling in tools/ (uv.lock IS committed, for reproducible installs)
+tools/.venv/
+__pycache__/
+.pytest_cache/

@@ -12,7 +12,13 @@ The new and improved codebase for the (M5Stack Core2) temperature display.
   - [CP210x_VCP_Windows](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Windows.zip) - This is probably the one you want.
   - [CH9102_VCP_SER_Windows](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CH9102_VCP_SER_Windows.exe)
   - Will probably require a reboot of you computer.
-- Create a `src/credentials.h` which you fill with the `#define`'s from [src/Config.h](./src/Config.h)
+- Create a `src/credentials.h` by copying the template and filling it in:
+  ```sh
+  cp src/credentials.example.h src/credentials.h
+  ```
+  Only `LOG_NOISE_PSK` is mandatory. Everything else has a placeholder default in
+  [src/Config.h](./src/Config.h), so a value you forget does **not** fail the
+  build - the firmware flashes and then quietly fails to connect.
   - Important to make sure the `CA_CERT` has the correct formatting (`\n` in the string and trailing `\` on each line)
     ```cpp
     #define CA_CERT "-----BEGIN CERTIFICATE-----\n"                                 \
@@ -21,17 +27,21 @@ The new and improved codebase for the (M5Stack Core2) temperature display.
                "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n" \
                "-----END CERTIFICATE-----";
     ```
-- (Optional) Create a `src/overrides.h` if you need custom MQTT topics, timings or layout.
+- (Optional) Create a `src/overrides.h` if you need custom MQTT topics, timings or layout:
+  ```sh
+  cp src/overrides.example.h src/overrides.h
+  ```
 
 Both files are **partial**: define only the macros you want to change, everything else falls back to the default in [src/Config.h](./src/Config.h). That file is the single place where every compile-time setting is declared and documented.
 
 Serial logging is on by default at 115200 baud (`pio device monitor`). Build with `-D DEBUG=0` to compile it out.
 
-> Put build flags in the `[env:...]` block, not in `[common]`. PlatformIO does
-> not merge `[common]` automatically - an env has to pull it in explicitly with
-> `build_flags = ${common.build_flags}`, and none currently do. Flags placed
-> there are silently ignored, which is why `VERSION` is not actually defined in
-> the firmware today.
+> Put build flags in the `[env:...]` block, or in `[common]` *and* reference it.
+> PlatformIO does not merge `[common]` automatically - an env has to pull it in
+> with `build_flags = ${common.build_flags}`, which the env now does. Before
+> that it did not, so the flags sitting in `[common]` were silently ignored and
+> `-D DEBUG=1` never reached the compiler; serial logging worked only because
+> `Config.h` defaults `DEBUG` to 1.
 
 ## OTA updates
 
@@ -94,19 +104,51 @@ therefore leaves `otadata` untouched: the device reboots into the current
 firmware, and the half-written image is inert until the next attempt overwrites
 it.
 
-**Firmware that flashes cleanly and then crashes at boot is not safe**, and this
-is the case worth respecting. Rollback is compiled in
-(`CONFIG_APP_ROLLBACK_ENABLE=y`), but the Arduino core calls
-`esp_ota_mark_app_valid_cancel_rollback()` from `initArduino()` - which runs
-*before* `setup()`. The new image is marked permanently valid before a single
-line of this project's code executes, so a panic in `setup()` boot-loops forever
-and rollback never fires. Recovery is a USB cable.
+**Firmware that flashes cleanly and then crashes at boot** is handled by an
+armed rollback. The Arduino core would otherwise call
+`esp_ota_mark_app_valid_cancel_rollback()` from `initArduino()` - *before*
+`setup()` - marking a new image permanently good before any of this project's
+code runs, so a panic in `setup()` would boot-loop forever with rollback never
+firing. `src/OTA.cpp` overrides the core's weak `verifyRollbackLater()` to keep
+the image on trial instead, and confirms it only once two things hold:
 
-The hook for fixing this is the weak `verifyRollbackLater()`: override it to
-return true, and the image stays `PENDING_VERIFY` until something in `loop()`
-decides it is healthy (WiFi plus broker connected, say) and marks it valid. Not
-currently implemented - flash a change you have not at least booted once on the
-bench with the cable attached.
+1. the OTA listener is up, and
+2. the device has been running for `OTA_VALIDATE_AFTER_MS` (default 60 s).
+
+Fail either and the next reboot rolls back to the previous image automatically.
+
+The bar is deliberately **"can this image still be updated remotely"**, not "is
+everything working". Rollback exists to recover firmware that cannot be fixed
+over the air, so a live listener is the whole test. Gating on the broker instead
+would roll a perfectly good image back during a routine broker outage - solving
+nothing and breaking something.
+
+> `extern "C"` on that override is load-bearing. The core declares
+> `verifyRollbackLater()` in a `.c` file, so a C++ definition mangles its name,
+> silently fails to override the weak symbol, and leaves the old behaviour in
+> place with no error anywhere. Verify with
+> `nm firmware.elf | grep verifyRollbackLater`: `T` means the override took, `W`
+> means the core's version is still winning.
+
+None of this affects normal operation. `ESP_OTA_IMG_PENDING_VERIFY` is only ever
+set on the first boot after an OTA push - an ordinary reboot runs with the image
+already valid, and a serial flash never sets it at all. Even during the window
+nothing is blocked or delayed: the display and broker behave exactly as usual,
+and the only deferred action is a one-time flag write to `otadata`.
+
+The cost is at the edges. Too short a window and firmware that panics a few
+seconds into `loop()` gets confirmed before it fails; too long and an ordinary
+power cut during the window rolls back an image that was fine. This display runs
+on grid power with no battery, so that second case is real if unlikely - which
+is the argument for 60 seconds rather than ten minutes. Set
+`OTA_VALIDATE_AFTER_MS` to `0` to confirm as soon as the listener is up.
+
+Serial shows which path a boot took:
+
+```
+[    1204] ota: image on trial, confirming after 60000ms of uptime
+[   60012] ota: image confirmed, rollback cancelled
+```
 
 ### Over the network: mDNS, IPs and VLANs
 
@@ -157,11 +199,15 @@ trusted LAN and worth knowing if it ever crosses something less trusted.
 
 ### You lose the serial log
 
-`pio device monitor` is a serial connection. Stop plugging in USB and `LOG()`
-output has nowhere to go, and `monitor_filters = esp32_exception_decoder` can no
-longer turn a panic backtrace into `file:line`. Combined with the boot-crash gap
-above, that is the argument for keeping the cable reachable until network
-logging (telnet or syslog) exists.
+`pio device monitor` is a serial connection, so going OTA-only takes `LOG()`
+output with it. See [Remote logs](#remote-logs) for the two network sinks that
+replace it.
+
+What they do not replace is `monitor_filters = esp32_exception_decoder`, which
+turns a panic backtrace into `file:line`. A crash still prints its backtrace to
+serial only, and as raw addresses anywhere else. Combined with the rollback
+window above, that is the argument for keeping a cable reachable when you are
+flashing something genuinely risky.
 
 ### The update looks like a crash unless you handle the Will
 
@@ -176,6 +222,70 @@ either way - the difference is that it happens on purpose, at a predictable
 moment, instead of ~45 seconds later as a timeout.
 
 The device publishes `online` again on its own when it reboots and reconnects.
+
+## Remote logs
+
+Once you stop plugging in USB, `LOG()` output has nowhere to go. Two sinks fix
+that, both fed by the same call, both optional, and they cover opposite cases.
+
+### Attach to it (the ESPHome model)
+
+The device listens on port 6053 and you attach to it. Traffic is
+`Noise_NNpsk0_25519_ChaChaPoly_SHA256` against a pre-shared key - the same
+cipher suite ESPHome's native API uses - so the stream is encrypted and
+authenticated, with forward secrecy from the ephemeral X25519 keys. Someone who
+later learns the PSK still cannot read a session they captured earlier.
+
+Generate a key, and put it in `src/credentials.h` as a **string literal**:
+
+```sh
+openssl rand -base64 32
+```
+
+```cpp
+#define LOG_NOISE_PSK "44-characters-ending-in="
+```
+
+Not the same value as `OTA_PASSWORD`: that one authorises writing firmware, this
+one only reads logs. ESPHome's own guidance is a unique credential per role and
+per device, for the same reason.
+
+Then attach with the client in [tools/](./tools):
+
+```sh
+export LOG_NOISE_PSK='<same value>'
+uv run --directory tools m5log m5-temperature-display.local
+```
+
+```
+-- attached to m5-temperature-display.local:6053 --
+[   61200] state: slot 2 stale
+[   62000] mqtt: forced reconnect
+```
+
+**There is no unauthenticated fallback.** Leave `LOG_NOISE_PSK` undefined and
+the listener is not compiled in at all, so the port does not exist. A mistyped
+key fails a `static_assert` at build time rather than becoming a handshake that
+mysteriously never completes.
+
+One watcher at a time; a new connection displaces the old, so a stale session
+from a closed laptop cannot lock everyone else out. A half-finished handshake is
+dropped after `LOG_NOISE_HANDSHAKE_TIMEOUT_MS` (5 s) rather than holding the
+slot. Writes are skipped, not blocked, if the watcher stops draining its socket:
+a slow reader loses lines rather than stalling the display loop.
+
+The limitation is inherent to the model: **it is live only.** Nobody attached
+means no record, so a boot sequence, or a crash at 04:00, is gone. You also
+cannot attach fast enough after a reboot to watch the device come up. For that,
+put the board on USB and read the serial console, which logs unconditionally.
+
+There used to be a second, push-based UDP syslog sink for the unattended case.
+It was removed: the display sits on an IoT VLAN that does not permit outbound
+connections to a collector, so it never recorded anything, and it was plaintext
+on a segment where the encrypted sink is the whole point.
+
+Compile the encrypted sink out by leaving `LOG_NOISE_PSK` undefined, and all
+logging with `-D DEBUG=0`.
 
 ## WiFi credentials are WIFI_SSID / WIFI_PASSPHRASE
 
@@ -211,6 +321,7 @@ Every topic the display touches, at a glance:
 | `m5/status/sleep`        | subscribe  | **no** | anything - ignored             | no, topic only      |
 | `m5/status/wake`         | subscribe  | **no** | anything - ignored             | no, topic only      |
 | `m5/status/availability` | publish    | yes    | `online` / `offline` (the Will)| n/a                 |
+| `m5/status/version`      | publish    | yes    | build stamp, e.g. `a2c26fd-dirty 2026-08-21T23:49:01+0200` | n/a |
 
 The display subscribes at QoS 1.
 
@@ -254,6 +365,31 @@ A quadrant that receives nothing for `STALE_TIMEOUT_MS` (default 90 minutes) is 
 ### m5/status/availability
 
 Publish, retained: `online` when the display connects, and `offline` published by the broker as the Last Will if the connection drops without a clean disconnect. Lets the rest of your system tell a quiet display from a dead one.
+
+### m5/status/version
+
+Publish, retained: the build stamp of the running firmware, republished on every
+broker connect.
+
+This exists because a silently failed OTA and a successful one look identical
+from the pushing end - espota reports 100% either way. Read this topic and you
+know which image is actually running, rather than inferring it.
+
+The stamp is `<git describe> <ISO 8601 build time>`, and **the timestamp is what
+makes it unique**. This project is flashed straight from a working tree that is
+essentially always dirty, so `git describe --dirty` alone returns an identical
+string for every build between commits and would answer nothing. The hash rides
+along for provenance.
+
+`scripts/version.py` regenerates the header into `$BUILD_DIR` before every
+build, so the source tree stays clean and exactly one translation unit
+(`src/Version.cpp`) recompiles when the stamp changes - a no-change rebuild
+compiles one file and relinks.
+
+> `Log.h` deliberately does **not** stamp `__DATE__` / `__TIME__` any more.
+> Those freeze when their including translation unit is compiled, so editing any
+> other `.cpp` left the boot line reporting the *previous* build. A stamp that
+> is right most of the time is worse than no stamp at all.
 
 ### m5/status/sleep and m5/status/wake
 

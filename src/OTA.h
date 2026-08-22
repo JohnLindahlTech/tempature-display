@@ -36,6 +36,11 @@ public:
   // transfer down measurably; the panel is a slow SPI device.
   void onProgress(std::function<void(uint8_t)> callback);
 
+  // True while this image is on trial: it booted for the first time after an
+  // update and has not been confirmed yet. Only ever true on the first boot
+  // after an OTA push - a normal reboot, or a serial flash, never sets it.
+  bool rollbackPending() const { return _rollbackPending; }
+
   // Fired if the update fails. On success the device reboots instead, so there
   // is no matching "finished" callback to hook.
   void onError(std::function<void(const char *)> callback);
@@ -43,9 +48,15 @@ public:
 private:
   void begin();
 
+  // Cancels the pending rollback once this image has proved it can still be
+  // updated remotely. See the long comment in OTA.cpp for why that, and not
+  // "everything works", is the right bar.
+  void confirmImage();
+
   const char *_hostname;
   const char *_password;
   bool _begun;
+  bool _rollbackPending;
   bool _inProgress;
   uint8_t _lastPercent;
 

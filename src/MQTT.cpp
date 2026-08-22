@@ -16,7 +16,9 @@ MQTT::MQTT(SSLClient &sslClient)
       _clientId(nullptr),
       _user(nullptr),
       _password(nullptr),
-      _lastReconnectAttempt(0)
+      _lastReconnectAttempt(0),
+      _wasConnected(false),
+      _publishFailed(false)
 {
 }
 
@@ -84,8 +86,18 @@ bool MQTT::loop(bool *justConnected)
   bool connected = _client.connected();
   if (connected)
   {
+    _wasConnected = true;
     _lastReconnectAttempt = 0;
     return true;
+  }
+
+  // Losing the broker is the single most common cause of a screen that quietly
+  // stops updating, and until now it said nothing at all.
+  if (_wasConnected)
+  {
+    _wasConnected = false;
+    LOG("mqtt: connection lost, %s (%d)", printStatus(_client.state()),
+        _client.state());
   }
 
   // Unsigned, so the subtraction below stays correct across the millis()
@@ -131,7 +143,23 @@ bool MQTT::publish(const char *topic, const char *payload, bool retained)
   {
     return false;
   }
-  return _client.publish(topic, payload, retained);
+  // PubSubClient refuses anything longer than MQTT_MAX_PACKET_SIZE without
+  // saying so, which is a silent truncation of whatever we meant to report.
+  // Latched to one line per outage - a broker rejecting every publish would
+  // otherwise generate a log entry per attempt, forever.
+  bool ok = _client.publish(topic, payload, retained);
+  if (!ok && !_publishFailed)
+  {
+    _publishFailed = true;
+    LOG("mqtt: publish to %s rejected (payload %u bytes)", topic,
+        (unsigned)strlen(payload));
+  }
+  else if (ok && _publishFailed)
+  {
+    _publishFailed = false;
+    LOG("mqtt: publishing again");
+  }
+  return ok;
 }
 
 void MQTT::forceReconnect()

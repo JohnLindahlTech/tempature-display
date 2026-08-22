@@ -48,6 +48,11 @@ private:
   const char *_user;
   const char *_password;
   uint32_t _lastReconnectAttempt;
+  // Edge detection, so a lost session is logged once rather than on every
+  // loop() until the retry timer comes round.
+  bool _wasConnected;
+  // Latched so a broker that rejects every publish cannot fill the log.
+  bool _publishFailed;
   // Keyed by topic text, not by pointer, and owns a copy of each topic.
   std::set<std::string> _subscriptionTopics;
 };

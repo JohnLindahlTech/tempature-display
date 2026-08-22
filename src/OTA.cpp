@@ -1,12 +1,30 @@
 #include "OTA.h"
 #include <ArduinoOTA.h>
+#include <esp_ota_ops.h>
 #include "Config.h"
 #include "Log.h"
+
+// Keep the pending rollback alive past initArduino().
+//
+// This is a weak symbol in the Arduino core (esp32-hal-misc.c). Left alone, the
+// core calls esp_ota_mark_app_valid_cancel_rollback() from initArduino() -
+// which runs BEFORE setup() - so a freshly flashed image is marked permanently
+// good before a single line of our code executes, and a panic in setup() would
+// boot-loop forever with rollback never firing.
+//
+// extern "C" is load-bearing: the core declares this in a .c file, so a C++
+// definition would mangle its name, silently fail to override the weak symbol,
+// and leave the old behaviour in place with nothing to show for it.
+extern "C" bool verifyRollbackLater()
+{
+  return true;
+}
 
 OTA::OTA()
     : _hostname(nullptr),
       _password(nullptr),
       _begun(false),
+      _rollbackPending(false),
       _inProgress(false),
       _lastPercent(0)
 {
@@ -16,6 +34,52 @@ void OTA::init(const char *hostname, const char *password)
 {
   _hostname = hostname;
   _password = password;
+
+  // Only true on the first boot after an OTA push. A normal reboot runs with
+  // the image already marked valid, and a serial flash never sets the state at
+  // all, so on both of those this is false and confirmProgress() does nothing.
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state;
+  _rollbackPending = (esp_ota_get_state_partition(running, &state) == ESP_OK &&
+                      state == ESP_OTA_IMG_PENDING_VERIFY);
+
+  if (_rollbackPending)
+  {
+    LOG("ota: image on trial, confirming after %lums of uptime",
+        (unsigned long)OTA_VALIDATE_AFTER_MS);
+  }
+}
+
+void OTA::confirmImage()
+{
+  // The bar is "can this image still be updated remotely", not "is everything
+  // working". Rollback exists to recover firmware that cannot be fixed over the
+  // air, so a live OTA listener is the whole test - gating on the broker
+  // instead would roll a perfectly good image back during a routine broker
+  // outage, which is worse than the problem being solved.
+  if (!_rollbackPending || !_begun)
+  {
+    return;
+  }
+
+  // Grace period: survive a while before vouching for the image, so firmware
+  // that comes up cleanly and then panics a few seconds into loop() still
+  // reboots with the rollback armed. Nothing is blocked while this runs - the
+  // display and the broker work normally; only the otadata write is deferred.
+  if (millis() < OTA_VALIDATE_AFTER_MS)
+  {
+    return;
+  }
+
+  _rollbackPending = false;
+  if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+  {
+    LOG("ota: image confirmed, rollback cancelled");
+  }
+  else
+  {
+    LOG("ota: WARNING failed to confirm image, it will roll back on reboot");
+  }
 }
 
 void OTA::onStart(std::function<void()> callback)
@@ -131,4 +195,5 @@ void OTA::loop(bool wifiConnected)
   }
 
   ArduinoOTA.handle();
+  confirmImage();
 }
